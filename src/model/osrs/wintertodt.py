@@ -228,9 +228,6 @@ class OSRSWintertodt(OSRSBot):
         self.state = WintertodtState.BANKING
         self.log_msg("Banking...")
 
-        # Items to keep in inventory (don't deposit these)
-        keep_items = [self.TINDERBOX, self.KNIFE]
-
         # Find the bank chest (tagged RED)
         bank = self.get_all_tagged_in_rect(self.win.game_view, self.TAG_BANK)
         if not bank:
