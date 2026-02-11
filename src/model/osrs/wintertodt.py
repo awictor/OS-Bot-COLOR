@@ -6,7 +6,6 @@ import pyautogui as pag
 import utilities.api.item_ids as ids
 import utilities.color as clr
 import utilities.random_util as rd
-from model.bot import BotStatus
 from model.osrs.osrs_bot import OSRSBot
 from utilities.api.morg_http_client import MorgHTTPSocket
 from utilities.api.status_socket import StatusSocket
