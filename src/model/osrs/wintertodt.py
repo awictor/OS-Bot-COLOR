@@ -16,6 +16,7 @@ class WintertodtState(Enum):
     GEARING_UP = "gearing_up"
     BANKING = "banking"
     ENTERING_ARENA = "entering_arena"
+    PREPARING_POTIONS = "preparing_potions"
     WAITING_FOR_ROUND = "waiting_for_round"
     CHOPPING = "chopping"
     FLETCHING = "fletching"
@@ -102,29 +103,47 @@ WARM_ITEM_IDS = {
 # Items that also count as warm AND as an axe (weapon slot overlap)
 WARM_AXE_IDS = {ids.INFERNAL_AXE}  # Infernal axe counts as both warm and an axe
 
+# Rejuvenation potion item IDs (all dose variants)
+REJUV_POTION_IDS = [
+    ids.REJUVENATION_POTION_4,  # 20699
+    ids.REJUVENATION_POTION_3,  # 20700
+    ids.REJUVENATION_POTION_2,  # 20701
+    ids.REJUVENATION_POTION_1,  # 20702
+]
+
 
 class OSRSWintertodt(OSRSBot):
     # Wintertodt item IDs
     BRUMA_ROOT = ids.BRUMA_ROOT  # 20695
     BRUMA_KINDLING = ids.BRUMA_KINDLING  # 20696
+    BRUMA_HERB = ids.BRUMA_HERB  # 20698
+    REJUV_UNF = ids.REJUVENATION_POTION_UNF  # 20697
     KNIFE = ids.KNIFE  # 946
     TINDERBOX = ids.TINDERBOX  # 590
     HAMMER = ids.HAMMER  # 2347
 
     # RuneLite tag colors (user must set these up)
     TAG_BRAZIER = clr.PINK
-    TAG_ROOTS = clr.CYAN
-    TAG_DOOR = clr.GREEN  # Tag the big doors green
-    TAG_BANK = clr.RED  # Tag the bank chest red
+    TAG_ROOTS = clr.CYAN         # Bruma roots (for chopping)
+    TAG_DOOR = clr.GREEN         # Doors of Dinh
+    TAG_BANK = clr.RED           # Bank chest
+    TAG_HERB_ROOTS = clr.YELLOW  # Sprouting roots (for picking bruma herbs)
+    TAG_CRATE = clr.PURPLE       # Supply crate (for unfinished rejuvenation potions)
 
     def __init__(self):
         bot_title = "Wintertodt"
         description = (
             "Plays the Wintertodt minigame (October 2024 rework mechanics).\n"
-            "RuneLite setup: Tag bruma roots CYAN, brazier PINK, doors GREEN, bank chest RED.\n"
-            "Start near the Wintertodt bank chest with axe equipped and 4 warm clothing pieces.\n"
+            "RuneLite setup:\n"
+            "  - Bruma roots: CYAN\n"
+            "  - Brazier: PINK\n"
+            "  - Doors of Dinh: GREEN\n"
+            "  - Bank chest: RED\n"
+            "  - Sprouting roots (herbs): YELLOW\n"
+            "  - Supply crate (unf potions): PURPLE\n"
+            "Start near the Wintertodt bank chest with axe equipped and 4 warm clothing.\n"
             "Bring tinderbox, hammer, and knife (if fletching) in inventory.\n"
-            "Bank should have food in the first slot (for warmth restoration).\n"
+            "Rejuvenation potions are made in-game — no food needed.\n"
             "Requirements: 50 Firemaking."
         )
         super().__init__(bot_title=bot_title, description=description)
@@ -132,7 +151,7 @@ class OSRSWintertodt(OSRSBot):
         self.running_time = 60
         self.eat_every_n_hits = 3
         self.fletch_roots = False
-        self.food_count = 5
+        self.potion_count = 4
         self.take_breaks = False
         # Runtime state
         self.state = WintertodtState.BANKING
@@ -140,13 +159,13 @@ class OSRSWintertodt(OSRSBot):
         self.round_active = False
         self.round_ended_at = 0.0  # Timestamp when last round ended
         self.last_chat_msg = ""  # Track last-seen chat message to avoid stale repeats
-        self.damage_count = 0  # Warmth damage events since last eat
-        self.last_ate_at = 0.0  # Timestamp of last food/potion consumption
+        self.damage_count = 0  # Warmth damage events since last potion sip
+        self.last_ate_at = 0.0  # Timestamp of last potion consumption
 
     def create_options(self):
         self.options_builder.add_slider_option("running_time", "How long to run (minutes)?", 1, 500)
-        self.options_builder.add_slider_option("eat_every_n_hits", "Eat food after how many Wintertodt hits?", 1, 6)
-        self.options_builder.add_slider_option("food_count", "How many food to withdraw per bank trip?", 1, 20)
+        self.options_builder.add_slider_option("eat_every_n_hits", "Drink potion after how many Wintertodt hits?", 1, 6)
+        self.options_builder.add_slider_option("potion_count", "How many potions to prepare per round?", 1, 10)
         self.options_builder.add_checkbox_option("fletch_roots", "Fletch roots into kindling?", [" "])
         self.options_builder.add_checkbox_option("take_breaks", "Take breaks?", [" "])
 
@@ -156,8 +175,8 @@ class OSRSWintertodt(OSRSBot):
                 self.running_time = options[option]
             elif option == "eat_every_n_hits":
                 self.eat_every_n_hits = options[option]
-            elif option == "food_count":
-                self.food_count = options[option]
+            elif option == "potion_count":
+                self.potion_count = options[option]
             elif option == "fletch_roots":
                 self.fletch_roots = options[option] != []
             elif option == "take_breaks":
@@ -167,8 +186,8 @@ class OSRSWintertodt(OSRSBot):
                 self.options_set = False
                 return
         self.log_msg(f"Running time: {self.running_time} minutes.")
-        self.log_msg(f"Eat after every {self.eat_every_n_hits} hits.")
-        self.log_msg(f"Food per bank trip: {self.food_count}.")
+        self.log_msg(f"Drink potion after every {self.eat_every_n_hits} hits.")
+        self.log_msg(f"Potions per round: {self.potion_count}.")
         self.log_msg(f"Fletch roots: {'Yes' if self.fletch_roots else 'No'}.")
         self.log_msg("Options set successfully.")
         self.options_set = True
@@ -417,28 +436,178 @@ class OSRSWintertodt(OSRSBot):
         return "none"
 
     # ==============================
+    # Rejuvenation Potion Management
+    # ==============================
+
+    def __count_potion_doses(self, api_s: StatusSocket) -> int:
+        """Count total rejuvenation potion doses in inventory."""
+        total = 0
+        for dose, item_id in enumerate(REJUV_POTION_IDS, start=1):
+            # REJUV_POTION_IDS is ordered [4-dose, 3-dose, 2-dose, 1-dose]
+            dose_value = 4 - (dose - 1)  # 4, 3, 2, 1
+            slots = api_s.get_inv_item_indices(item_id)
+            total += len(slots) * dose_value
+        return total
+
+    def __has_any_potion(self, api_s: StatusSocket) -> bool:
+        """Check if player has any rejuvenation potion dose in inventory."""
+        for item_id in REJUV_POTION_IDS:
+            if api_s.get_if_item_in_inv(item_id):
+                return True
+        return False
+
+    def __drink_potion(self, api_s: StatusSocket):
+        """Drink one dose of rejuvenation potion (prefers highest dose first)."""
+        for item_id in REJUV_POTION_IDS:
+            slots = api_s.get_inv_item_indices(item_id)
+            if slots:
+                self.log_msg(f"Drinking rejuvenation potion (took {self.damage_count} hits)...")
+                self.mouse.move_to(self.win.inventory_slots[slots[0]].random_point())
+                self.mouse.click()
+                time.sleep(0.6)
+                self.damage_count = 0
+                self.last_ate_at = time.time()
+                return
+        self.log_msg("No rejuvenation potions to drink!")
+
+    def __prepare_potions(self, api_m: MorgHTTPSocket, api_s: StatusSocket):
+        """
+        Prepare rejuvenation potions inside the Wintertodt area.
+        Flow:
+          1. Take unfinished rejuvenation potions from the supply crate (tagged PURPLE)
+          2. Pick bruma herbs from sprouting roots (tagged YELLOW)
+          3. Use herb on unfinished potion to create rejuvenation potion (4)
+             OR use ingredients on Brew'ma NPC (if Druidic Ritual not completed)
+        This is done in the lobby area between rounds.
+        """
+        self.state = WintertodtState.PREPARING_POTIONS
+
+        # Check how many potions we already have
+        current_doses = self.__count_potion_doses(api_s)
+        needed_potions = self.potion_count - (current_doses // 4)
+
+        if needed_potions <= 0:
+            self.log_msg(f"Have enough potions ({current_doses} doses). Ready for round.")
+            return
+
+        self.log_msg(f"Need {needed_potions} more potions ({current_doses} doses on hand)...")
+
+        # Step 1: Take unfinished potions from the supply crate
+        unf_count = len(api_s.get_inv_item_indices(self.REJUV_UNF))
+        if unf_count < needed_potions:
+            self.__take_from_crate(api_s, needed_potions - unf_count)
+
+        # Step 2: Pick bruma herbs from sprouting roots
+        herb_count = len(api_s.get_inv_item_indices(self.BRUMA_HERB))
+        unf_count = len(api_s.get_inv_item_indices(self.REJUV_UNF))
+        herbs_needed = min(unf_count, needed_potions) - herb_count
+
+        if herbs_needed > 0:
+            self.__pick_herbs(api_m, api_s, herbs_needed)
+
+        # Step 3: Combine herbs with unfinished potions
+        herb_count = len(api_s.get_inv_item_indices(self.BRUMA_HERB))
+        unf_count = len(api_s.get_inv_item_indices(self.REJUV_UNF))
+        if herb_count > 0 and unf_count > 0:
+            self.__make_potions(api_m, api_s)
+
+    def __take_from_crate(self, api_s: StatusSocket, count: int):
+        """Take unfinished rejuvenation potions from the supply crate (tagged PURPLE)."""
+        crate = self.get_all_tagged_in_rect(self.win.game_view, self.TAG_CRATE)
+        if not crate:
+            self.log_msg("No tagged supply crate found. Tag the crate PURPLE.")
+            time.sleep(1)
+            return
+
+        crate = sorted(crate, key=RuneLiteObject.distance_from_rect_center)
+        self.log_msg(f"Taking {count} unfinished potions from crate...")
+
+        for _ in range(count):
+            self.mouse.move_to(crate[0].random_point())
+            if self.mouseover_text(contains="Take", color=clr.OFF_WHITE):
+                self.mouse.click()
+                time.sleep(0.8)
+            else:
+                self.log_msg("Could not find 'Take' option on crate.")
+                break
+
+        time.sleep(0.3)
+        new_count = len(api_s.get_inv_item_indices(self.REJUV_UNF))
+        self.log_msg(f"Have {new_count} unfinished potions.")
+
+    def __pick_herbs(self, api_m: MorgHTTPSocket, api_s: StatusSocket, count: int):
+        """Pick bruma herbs from sprouting roots (tagged YELLOW)."""
+        herb_roots = self.get_all_tagged_in_rect(self.win.game_view, self.TAG_HERB_ROOTS)
+        if not herb_roots:
+            self.log_msg("No tagged sprouting roots found. Tag sprouting roots YELLOW.")
+            time.sleep(1)
+            return
+
+        herb_roots = sorted(herb_roots, key=RuneLiteObject.distance_from_rect_center)
+        self.log_msg(f"Picking {count} bruma herbs...")
+
+        for _ in range(count):
+            self.mouse.move_to(herb_roots[0].random_point())
+            if self.mouseover_text(contains="Pick", color=clr.OFF_WHITE):
+                self.mouse.click()
+                time.sleep(1.2)
+                # Wait for pick animation
+                self.__wait_while_active(api_m, timeout=5)
+            else:
+                self.log_msg("Could not find 'Pick' option on sprouting roots.")
+                break
+
+        time.sleep(0.3)
+        new_count = len(api_s.get_inv_item_indices(self.BRUMA_HERB))
+        self.log_msg(f"Have {new_count} bruma herbs.")
+
+    def __make_potions(self, api_m: MorgHTTPSocket, api_s: StatusSocket):
+        """
+        Combine bruma herbs with unfinished rejuvenation potions.
+        Uses herb on unfinished potion in inventory.
+        """
+        herb_slots = api_s.get_inv_item_indices(self.BRUMA_HERB)
+        unf_slots = api_s.get_inv_item_indices(self.REJUV_UNF)
+
+        if not herb_slots or not unf_slots:
+            return
+
+        pairs = min(len(herb_slots), len(unf_slots))
+        self.log_msg(f"Making {pairs} rejuvenation potions...")
+
+        # Click herb, then click unfinished potion to combine
+        self.mouse.move_to(self.win.inventory_slots[herb_slots[0]].random_point())
+        self.mouse.click()
+        time.sleep(0.3)
+
+        self.mouse.move_to(self.win.inventory_slots[unf_slots[0]].random_point())
+        self.mouse.click()
+        time.sleep(0.5)
+
+        # Wait for all potions to be made (the game auto-combines matching pairs)
+        self.__wait_while_active(api_m, timeout=pairs * 2 + 3)
+
+        # Verify
+        doses = self.__count_potion_doses(api_s)
+        self.log_msg(f"Potion making done. Total doses: {doses}.")
+
+    # ==============================
     # Warmth Management
     # ==============================
 
     def __handle_warmth(self, api_s: StatusSocket) -> bool:
         """
-        Manage warmth by tracking damage events and eating food/potions.
+        Manage warmth by tracking damage events and drinking rejuvenation potions.
         The warmth meter replaced HP in the October 2024 rework.
         Since the API doesn't expose warmth directly, we track incoming damage
-        chat messages and eat after every N hits.
-        Returns False if out of food and should leave arena.
+        chat messages and drink a potion after every N hits.
+        Returns False if out of potions and should leave arena.
         """
         if self.damage_count >= self.eat_every_n_hits:
-            food_slots = api_s.get_inv_item_indices(ids.all_food)
-            if not food_slots:
-                self.log_msg("No food for warmth! Need to leave arena.")
+            if not self.__has_any_potion(api_s):
+                self.log_msg("No rejuvenation potions! Need to prepare more.")
                 return False
-            self.log_msg(f"Restoring warmth (took {self.damage_count} hits)...")
-            self.mouse.move_to(self.win.inventory_slots[food_slots[0]].random_point())
-            self.mouse.click()
-            time.sleep(1.0)
-            self.damage_count = 0
-            self.last_ate_at = time.time()
+            self.__drink_potion(api_s)
         return True
 
     # ==============================
@@ -446,18 +615,28 @@ class OSRSWintertodt(OSRSBot):
     # ==============================
 
     def __handle_bank_area(self, api_m: MorgHTTPSocket, api_s: StatusSocket):
-        """Handle logic when outside the arena: bank if needed, then enter."""
-        food_slots = api_s.get_inv_item_indices(ids.all_food)
+        """
+        Handle logic when outside the arena.
+        Banking is only needed to deposit loot from previous rounds.
+        Then enter the arena — potions are made inside.
+        """
+        # Check if we have loot to deposit (anything that isn't a tool)
+        inv = api_s.get_inv()
+        tool_ids = {self.TINDERBOX, self.HAMMER}
+        if self.fletch_roots:
+            tool_ids.add(self.KNIFE)
 
-        if len(food_slots) < self.food_count:
+        has_loot = any(item["id"] not in tool_ids for item in inv)
+
+        if has_loot:
             self.__do_banking(api_m, api_s)
         else:
             self.__enter_arena(api_m)
 
     def __do_banking(self, api_m: MorgHTTPSocket, api_s: StatusSocket):
-        """Open bank, deposit non-essential items, withdraw food for warmth."""
+        """Open bank and deposit non-essential items. No food/potion withdrawal needed."""
         self.state = WintertodtState.BANKING
-        self.log_msg("Banking...")
+        self.log_msg("Banking (depositing loot)...")
 
         # Find the bank chest (tagged RED)
         bank = self.get_all_tagged_in_rect(self.win.game_view, self.TAG_BANK)
@@ -480,10 +659,6 @@ class OSRSWintertodt(OSRSBot):
         # Deposit non-tool items (keeps tinderbox, hammer, knife if fletching)
         self.__deposit_non_tools(api_s)
         time.sleep(0.8)
-
-        # Withdraw food for warmth restoration
-        self.__withdraw_food(api_s)
-        time.sleep(0.5)
 
         # Close bank with Escape
         pag.press("escape")
@@ -524,31 +699,6 @@ class OSRSWintertodt(OSRSBot):
         bank_x = gv.left + (gv.width - BANK_INTERFACE_W) // 2
         bank_y = gv.top + (gv.height - BANK_INTERFACE_H) // 2
         return bank_x, bank_y
-
-    def __withdraw_food(self, api_s: StatusSocket):
-        """
-        Withdraw food from the bank for warmth restoration.
-        Expects food in the first bank slot (first tab, top-left item).
-        Position calibrated: first slot at offset (57, 77) within the 488x300 bank panel.
-        """
-        self.log_msg(f"Withdrawing {self.food_count} food...")
-        bank_x, bank_y = self.__get_bank_origin()
-        slot_center_x = bank_x + BANK_FIRST_SLOT_X + (BANK_SLOT_W // 2)
-        slot_center_y = bank_y + BANK_FIRST_SLOT_Y + (BANK_SLOT_H // 2)
-
-        for _ in range(self.food_count):
-            self.mouse.move_to((slot_center_x + rd.fancy_normal_sample(-5, 5),
-                                slot_center_y + rd.fancy_normal_sample(-5, 5)))
-            self.mouse.click()
-            time.sleep(0.2)
-
-        # Verify we got food
-        time.sleep(0.3)
-        food_slots = api_s.get_inv_item_indices(ids.all_food)
-        if food_slots:
-            self.log_msg(f"Withdrew {len(food_slots)} food.")
-        else:
-            self.log_msg("Warning: Could not verify food was withdrawn.")
 
     # ==============================
     # Arena Entry/Exit
@@ -609,7 +759,7 @@ class OSRSWintertodt(OSRSBot):
     # ==============================
 
     def __handle_arena(self, api_m: MorgHTTPSocket, api_s: StatusSocket):
-        """Main arena logic — detect round status and act accordingly."""
+        """Main arena logic — detect round status, manage potions, and act."""
         round_status = self.__check_round_status(api_m)
 
         # --- React to round events ---
@@ -635,7 +785,13 @@ class OSRSWintertodt(OSRSBot):
 
         # --- Warmth management ---
         if not self.__handle_warmth(api_s):
-            self.__exit_arena(api_m)
+            # Out of potions — try to prepare more if between rounds
+            if not self.round_active:
+                self.__prepare_potions(api_m, api_s)
+            else:
+                # During a round with no potions — leave to avoid death
+                self.log_msg("No potions mid-round! Exiting to safety.")
+                self.__exit_arena(api_m)
             return
 
         # --- If round is active, do Wintertodt actions ---
@@ -644,11 +800,9 @@ class OSRSWintertodt(OSRSBot):
         else:
             self.state = WintertodtState.WAITING_FOR_ROUND
 
-            # Check if we have food; if not, exit and bank
-            food_slots = api_s.get_inv_item_indices(ids.all_food)
-            if len(food_slots) == 0:
-                self.log_msg("No food. Leaving arena to bank.")
-                self.__exit_arena(api_m)
+            # Between rounds — prepare potions if needed
+            if not self.__has_any_potion(api_s):
+                self.__prepare_potions(api_m, api_s)
                 return
 
             # Round starts exactly 60 seconds after the last one ended
@@ -679,7 +833,7 @@ class OSRSWintertodt(OSRSBot):
             self.__chop_roots(api_m)
 
     def __on_round_end(self, api_m: MorgHTTPSocket, api_s: StatusSocket):
-        """Handle round ending: update counter, decide whether to stay or bank."""
+        """Handle round ending: update counter, prepare for next round."""
         self.round_active = False
         self.rounds_completed += 1
         self.round_ended_at = time.time()
@@ -689,13 +843,15 @@ class OSRSWintertodt(OSRSBot):
         # Wait briefly for the round to fully resolve
         time.sleep(3)
 
-        # Check if we have food for another round
-        food_slots = api_s.get_inv_item_indices(ids.all_food)
-        if len(food_slots) >= 2:
-            self.log_msg("Waiting for next round (60s respawn)...")
-            self.state = WintertodtState.WAITING_FOR_ROUND
-        else:
-            self.__exit_arena(api_m)
+        # Between rounds: prepare potions for the next round
+        # Check if we have enough doses for another round
+        doses = self.__count_potion_doses(api_s)
+        if doses < 4:
+            self.log_msg(f"Low on potions ({doses} doses). Preparing more...")
+            self.__prepare_potions(api_m, api_s)
+
+        self.log_msg("Waiting for next round (60s respawn)...")
+        self.state = WintertodtState.WAITING_FOR_ROUND
 
     # ==============================
     # Core Actions
