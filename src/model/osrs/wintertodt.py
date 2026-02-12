@@ -8,7 +8,6 @@ import utilities.color as clr
 import utilities.random_util as rd
 from model.osrs.osrs_bot import OSRSBot
 from utilities.api.morg_http_client import MorgHTTPSocket
-from utilities.api.status_socket import StatusSocket
 from utilities.geometry import RuneLiteObject
 
 
@@ -194,7 +193,6 @@ class OSRSWintertodt(OSRSBot):
 
     def main_loop(self):
         api_m = MorgHTTPSocket()
-        api_s = StatusSocket()
 
         # Open inventory tab
         self.log_msg("Selecting inventory...")
@@ -203,7 +201,7 @@ class OSRSWintertodt(OSRSBot):
         time.sleep(0.5)
 
         # --- Startup gear validation ---
-        if not self.__validate_and_gear_up(api_m, api_s):
+        if not self.__validate_and_gear_up(api_m):
             self.log_msg("Failed to gear up. Stopping.")
             self.stop()
             return
@@ -216,9 +214,9 @@ class OSRSWintertodt(OSRSBot):
             in_arena = self.__is_in_arena(api_m)
 
             if not in_arena:
-                self.__handle_bank_area(api_m, api_s)
+                self.__handle_bank_area(api_m)
             else:
-                self.__handle_arena(api_m, api_s)
+                self.__handle_arena(api_m)
 
             # Random break chance (only between rounds)
             if rd.random_chance(probability=0.02) and self.take_breaks and not self.round_active:
@@ -234,7 +232,7 @@ class OSRSWintertodt(OSRSBot):
     # Gear Validation & Setup
     # ==============================
 
-    def __validate_and_gear_up(self, api_m: MorgHTTPSocket, api_s: StatusSocket) -> bool:
+    def __validate_and_gear_up(self, api_m: MorgHTTPSocket) -> bool:
         """
         Check if the player has all required gear equipped and in inventory.
         If items are missing, attempt to withdraw them from the bank.
@@ -264,14 +262,14 @@ class OSRSWintertodt(OSRSBot):
         has_axe_in_inv = False
         if not has_axe_equipped:
             for axe_id in AXE_IDS:
-                if api_s.get_if_item_in_inv(axe_id):
+                if api_m.get_if_item_in_inv(axe_id):
                     has_axe_in_inv = True
                     break
 
         # --- Check inventory tools ---
-        has_tinderbox = api_s.get_if_item_in_inv(self.TINDERBOX) or api_s.get_if_item_in_inv(ids.BRUMA_TORCH)
-        has_hammer = api_s.get_if_item_in_inv(self.HAMMER)
-        has_knife = api_s.get_if_item_in_inv(self.KNIFE) if self.fletch_roots else True
+        has_tinderbox = api_m.get_if_item_in_inv(self.TINDERBOX) or api_m.get_if_item_in_inv(ids.BRUMA_TORCH)
+        has_hammer = api_m.get_if_item_in_inv(self.HAMMER)
+        has_knife = api_m.get_if_item_in_inv(self.KNIFE) if self.fletch_roots else True
 
         # --- Determine what's missing ---
         missing = []
@@ -292,14 +290,14 @@ class OSRSWintertodt(OSRSBot):
         missing_names = [name for name, _ in missing]
         self.log_msg(f"Missing: {', '.join(missing_names)}. Withdrawing from bank...")
 
-        if not self.__withdraw_missing_tools(api_s, missing):
+        if not self.__withdraw_missing_tools(api_m, missing):
             return False
 
         # Re-check after bank withdrawal
-        has_tinderbox = api_s.get_if_item_in_inv(self.TINDERBOX) or api_s.get_if_item_in_inv(ids.BRUMA_TORCH)
-        has_hammer = api_s.get_if_item_in_inv(self.HAMMER)
-        has_knife = api_s.get_if_item_in_inv(self.KNIFE) if self.fletch_roots else True
-        has_axe_in_inv = any(api_s.get_if_item_in_inv(axe_id) for axe_id in AXE_IDS)
+        has_tinderbox = api_m.get_if_item_in_inv(self.TINDERBOX) or api_m.get_if_item_in_inv(ids.BRUMA_TORCH)
+        has_hammer = api_m.get_if_item_in_inv(self.HAMMER)
+        has_knife = api_m.get_if_item_in_inv(self.KNIFE) if self.fletch_roots else True
+        has_axe_in_inv = any(api_m.get_if_item_in_inv(axe_id) for axe_id in AXE_IDS)
         has_axe_equipped = any(api_m.get_is_item_equipped(axe_id) for axe_id in AXE_IDS)
 
         if not has_tinderbox or not has_hammer or (self.fletch_roots and not has_knife):
@@ -313,7 +311,7 @@ class OSRSWintertodt(OSRSBot):
         self.log_msg("Gear check passed after bank withdrawal.")
         return True
 
-    def __withdraw_missing_tools(self, api_s: StatusSocket, missing: list) -> bool:
+    def __withdraw_missing_tools(self, api_m: MorgHTTPSocket, missing: list) -> bool:
         """
         Open bank and withdraw missing tools. Each entry in missing is (name, [item_ids]).
         Clicks the bank chest, then uses inventory check to find and withdraw each item.
@@ -439,27 +437,27 @@ class OSRSWintertodt(OSRSBot):
     # Rejuvenation Potion Management
     # ==============================
 
-    def __count_potion_doses(self, api_s: StatusSocket) -> int:
+    def __count_potion_doses(self, api_m: MorgHTTPSocket) -> int:
         """Count total rejuvenation potion doses in inventory."""
         total = 0
         for dose, item_id in enumerate(REJUV_POTION_IDS, start=1):
             # REJUV_POTION_IDS is ordered [4-dose, 3-dose, 2-dose, 1-dose]
             dose_value = 4 - (dose - 1)  # 4, 3, 2, 1
-            slots = api_s.get_inv_item_indices(item_id)
+            slots = api_m.get_inv_item_indices(item_id)
             total += len(slots) * dose_value
         return total
 
-    def __has_any_potion(self, api_s: StatusSocket) -> bool:
+    def __has_any_potion(self, api_m: MorgHTTPSocket) -> bool:
         """Check if player has any rejuvenation potion dose in inventory."""
         for item_id in REJUV_POTION_IDS:
-            if api_s.get_if_item_in_inv(item_id):
+            if api_m.get_if_item_in_inv(item_id):
                 return True
         return False
 
-    def __drink_potion(self, api_s: StatusSocket):
+    def __drink_potion(self, api_m: MorgHTTPSocket):
         """Drink one dose of rejuvenation potion (prefers highest dose first)."""
         for item_id in REJUV_POTION_IDS:
-            slots = api_s.get_inv_item_indices(item_id)
+            slots = api_m.get_inv_item_indices(item_id)
             if slots:
                 self.log_msg(f"Drinking rejuvenation potion (took {self.damage_count} hits)...")
                 self.mouse.move_to(self.win.inventory_slots[slots[0]].random_point())
@@ -470,7 +468,7 @@ class OSRSWintertodt(OSRSBot):
                 return
         self.log_msg("No rejuvenation potions to drink!")
 
-    def __prepare_potions(self, api_m: MorgHTTPSocket, api_s: StatusSocket):
+    def __prepare_potions(self, api_m: MorgHTTPSocket):
         """
         Prepare rejuvenation potions inside the Wintertodt area.
         Flow:
@@ -483,7 +481,7 @@ class OSRSWintertodt(OSRSBot):
         self.state = WintertodtState.PREPARING_POTIONS
 
         # Check how many potions we already have
-        current_doses = self.__count_potion_doses(api_s)
+        current_doses = self.__count_potion_doses(api_m)
         needed_potions = self.potion_count - (current_doses // 4)
 
         if needed_potions <= 0:
@@ -493,25 +491,25 @@ class OSRSWintertodt(OSRSBot):
         self.log_msg(f"Need {needed_potions} more potions ({current_doses} doses on hand)...")
 
         # Step 1: Take unfinished potions from the supply crate
-        unf_count = len(api_s.get_inv_item_indices(self.REJUV_UNF))
+        unf_count = len(api_m.get_inv_item_indices(self.REJUV_UNF))
         if unf_count < needed_potions:
-            self.__take_from_crate(api_s, needed_potions - unf_count)
+            self.__take_from_crate(api_m, needed_potions - unf_count)
 
         # Step 2: Pick bruma herbs from sprouting roots
-        herb_count = len(api_s.get_inv_item_indices(self.BRUMA_HERB))
-        unf_count = len(api_s.get_inv_item_indices(self.REJUV_UNF))
+        herb_count = len(api_m.get_inv_item_indices(self.BRUMA_HERB))
+        unf_count = len(api_m.get_inv_item_indices(self.REJUV_UNF))
         herbs_needed = min(unf_count, needed_potions) - herb_count
 
         if herbs_needed > 0:
-            self.__pick_herbs(api_m, api_s, herbs_needed)
+            self.__pick_herbs(api_m, herbs_needed)
 
         # Step 3: Combine herbs with unfinished potions
-        herb_count = len(api_s.get_inv_item_indices(self.BRUMA_HERB))
-        unf_count = len(api_s.get_inv_item_indices(self.REJUV_UNF))
+        herb_count = len(api_m.get_inv_item_indices(self.BRUMA_HERB))
+        unf_count = len(api_m.get_inv_item_indices(self.REJUV_UNF))
         if herb_count > 0 and unf_count > 0:
-            self.__make_potions(api_m, api_s)
+            self.__make_potions(api_m)
 
-    def __take_from_crate(self, api_s: StatusSocket, count: int):
+    def __take_from_crate(self, api_m: MorgHTTPSocket, count: int):
         """Take unfinished rejuvenation potions from the supply crate (tagged PURPLE)."""
         crate = self.get_all_tagged_in_rect(self.win.game_view, self.TAG_CRATE)
         if not crate:
@@ -532,10 +530,10 @@ class OSRSWintertodt(OSRSBot):
                 break
 
         time.sleep(0.3)
-        new_count = len(api_s.get_inv_item_indices(self.REJUV_UNF))
+        new_count = len(api_m.get_inv_item_indices(self.REJUV_UNF))
         self.log_msg(f"Have {new_count} unfinished potions.")
 
-    def __pick_herbs(self, api_m: MorgHTTPSocket, api_s: StatusSocket, count: int):
+    def __pick_herbs(self, api_m: MorgHTTPSocket, count: int):
         """Pick bruma herbs from sprouting roots (tagged YELLOW)."""
         herb_roots = self.get_all_tagged_in_rect(self.win.game_view, self.TAG_HERB_ROOTS)
         if not herb_roots:
@@ -558,16 +556,16 @@ class OSRSWintertodt(OSRSBot):
                 break
 
         time.sleep(0.3)
-        new_count = len(api_s.get_inv_item_indices(self.BRUMA_HERB))
+        new_count = len(api_m.get_inv_item_indices(self.BRUMA_HERB))
         self.log_msg(f"Have {new_count} bruma herbs.")
 
-    def __make_potions(self, api_m: MorgHTTPSocket, api_s: StatusSocket):
+    def __make_potions(self, api_m: MorgHTTPSocket):
         """
         Combine bruma herbs with unfinished rejuvenation potions.
         Uses herb on unfinished potion in inventory.
         """
-        herb_slots = api_s.get_inv_item_indices(self.BRUMA_HERB)
-        unf_slots = api_s.get_inv_item_indices(self.REJUV_UNF)
+        herb_slots = api_m.get_inv_item_indices(self.BRUMA_HERB)
+        unf_slots = api_m.get_inv_item_indices(self.REJUV_UNF)
 
         if not herb_slots or not unf_slots:
             return
@@ -588,14 +586,14 @@ class OSRSWintertodt(OSRSBot):
         self.__wait_while_active(api_m, timeout=pairs * 2 + 3)
 
         # Verify
-        doses = self.__count_potion_doses(api_s)
+        doses = self.__count_potion_doses(api_m)
         self.log_msg(f"Potion making done. Total doses: {doses}.")
 
     # ==============================
     # Warmth Management
     # ==============================
 
-    def __handle_warmth(self, api_s: StatusSocket) -> bool:
+    def __handle_warmth(self, api_m: MorgHTTPSocket) -> bool:
         """
         Manage warmth by tracking damage events and drinking rejuvenation potions.
         The warmth meter replaced HP in the October 2024 rework.
@@ -604,24 +602,24 @@ class OSRSWintertodt(OSRSBot):
         Returns False if out of potions and should leave arena.
         """
         if self.damage_count >= self.eat_every_n_hits:
-            if not self.__has_any_potion(api_s):
+            if not self.__has_any_potion(api_m):
                 self.log_msg("No rejuvenation potions! Need to prepare more.")
                 return False
-            self.__drink_potion(api_s)
+            self.__drink_potion(api_m)
         return True
 
     # ==============================
     # Bank Area Logic
     # ==============================
 
-    def __handle_bank_area(self, api_m: MorgHTTPSocket, api_s: StatusSocket):
+    def __handle_bank_area(self, api_m: MorgHTTPSocket):
         """
         Handle logic when outside the arena.
         Banking is only needed to deposit loot from previous rounds.
         Then enter the arena — potions are made inside.
         """
         # Check if we have loot to deposit (anything that isn't a tool)
-        inv = api_s.get_inv()
+        inv = api_m.get_inv()
         tool_ids = {self.TINDERBOX, self.HAMMER}
         if self.fletch_roots:
             tool_ids.add(self.KNIFE)
@@ -629,11 +627,11 @@ class OSRSWintertodt(OSRSBot):
         has_loot = any(item["id"] not in tool_ids for item in inv)
 
         if has_loot:
-            self.__do_banking(api_m, api_s)
+            self.__do_banking(api_m)
         else:
             self.__enter_arena(api_m)
 
-    def __do_banking(self, api_m: MorgHTTPSocket, api_s: StatusSocket):
+    def __do_banking(self, api_m: MorgHTTPSocket):
         """Open bank and deposit non-essential items. No food/potion withdrawal needed."""
         self.state = WintertodtState.BANKING
         self.log_msg("Banking (depositing loot)...")
@@ -657,7 +655,7 @@ class OSRSWintertodt(OSRSBot):
         time.sleep(1.5)
 
         # Deposit non-tool items (keeps tinderbox, hammer, knife if fletching)
-        self.__deposit_non_tools(api_s)
+        self.__deposit_non_tools(api_m)
         time.sleep(0.8)
 
         # Close bank with Escape
@@ -666,7 +664,7 @@ class OSRSWintertodt(OSRSBot):
 
         self.log_msg("Banking complete.")
 
-    def __deposit_non_tools(self, api_s: StatusSocket):
+    def __deposit_non_tools(self, api_m: MorgHTTPSocket):
         """
         Deposit all inventory items except essential tools.
         With the bank open, clicking an inventory item deposits it.
@@ -676,7 +674,7 @@ class OSRSWintertodt(OSRSBot):
         if self.fletch_roots:
             tool_ids.add(self.KNIFE)
 
-        inv = api_s.get_inv()
+        inv = api_m.get_inv()
         deposited = 0
         for item in inv:
             if item["id"] not in tool_ids:
@@ -758,13 +756,13 @@ class OSRSWintertodt(OSRSBot):
     # Arena Logic (Round Handling)
     # ==============================
 
-    def __handle_arena(self, api_m: MorgHTTPSocket, api_s: StatusSocket):
+    def __handle_arena(self, api_m: MorgHTTPSocket):
         """Main arena logic — detect round status, manage potions, and act."""
         round_status = self.__check_round_status(api_m)
 
         # --- React to round events ---
         if round_status == "round_end":
-            self.__on_round_end(api_m, api_s)
+            self.__on_round_end(api_m)
             return
 
         if round_status == "brazier_out":
@@ -784,10 +782,10 @@ class OSRSWintertodt(OSRSBot):
             self.round_active = True  # Damage confirms round is active
 
         # --- Warmth management ---
-        if not self.__handle_warmth(api_s):
+        if not self.__handle_warmth(api_m):
             # Out of potions — try to prepare more if between rounds
             if not self.round_active:
-                self.__prepare_potions(api_m, api_s)
+                self.__prepare_potions(api_m)
             else:
                 # During a round with no potions — leave to avoid death
                 self.log_msg("No potions mid-round! Exiting to safety.")
@@ -796,13 +794,13 @@ class OSRSWintertodt(OSRSBot):
 
         # --- If round is active, do Wintertodt actions ---
         if self.round_active:
-            self.__do_wintertodt_actions(api_m, api_s)
+            self.__do_wintertodt_actions(api_m)
         else:
             self.state = WintertodtState.WAITING_FOR_ROUND
 
             # Between rounds — prepare potions if needed
-            if not self.__has_any_potion(api_s):
-                self.__prepare_potions(api_m, api_s)
+            if not self.__has_any_potion(api_m):
+                self.__prepare_potions(api_m)
                 return
 
             # Round starts exactly 60 seconds after the last one ended
@@ -813,11 +811,11 @@ class OSRSWintertodt(OSRSBot):
             else:
                 time.sleep(2)
 
-    def __do_wintertodt_actions(self, api_m: MorgHTTPSocket, api_s: StatusSocket):
+    def __do_wintertodt_actions(self, api_m: MorgHTTPSocket):
         """Core Wintertodt gameplay: chop, fletch, feed."""
-        has_roots = api_s.get_if_item_in_inv(self.BRUMA_ROOT)
-        has_kindling = api_s.get_if_item_in_inv(self.BRUMA_KINDLING)
-        inv_full = api_s.get_is_inv_full()
+        has_roots = api_m.get_if_item_in_inv(self.BRUMA_ROOT)
+        has_kindling = api_m.get_if_item_in_inv(self.BRUMA_KINDLING)
+        inv_full = api_m.get_is_inv_full()
 
         if not api_m.get_is_player_idle():
             time.sleep(1)
@@ -826,13 +824,13 @@ class OSRSWintertodt(OSRSBot):
         # Decide next action
         if inv_full or (has_roots and not self.fletch_roots) or has_kindling:
             if self.fletch_roots and has_roots:
-                self.__fletch_roots(api_m, api_s)
+                self.__fletch_roots(api_m)
             else:
-                self.__feed_brazier(api_m, api_s)
+                self.__feed_brazier(api_m)
         else:
             self.__chop_roots(api_m)
 
-    def __on_round_end(self, api_m: MorgHTTPSocket, api_s: StatusSocket):
+    def __on_round_end(self, api_m: MorgHTTPSocket):
         """Handle round ending: update counter, prepare for next round."""
         self.round_active = False
         self.rounds_completed += 1
@@ -845,10 +843,10 @@ class OSRSWintertodt(OSRSBot):
 
         # Between rounds: prepare potions for the next round
         # Check if we have enough doses for another round
-        doses = self.__count_potion_doses(api_s)
+        doses = self.__count_potion_doses(api_m)
         if doses < 4:
             self.log_msg(f"Low on potions ({doses} doses). Preparing more...")
-            self.__prepare_potions(api_m, api_s)
+            self.__prepare_potions(api_m)
 
         self.log_msg("Waiting for next round (60s respawn)...")
         self.state = WintertodtState.WAITING_FOR_ROUND
@@ -876,12 +874,12 @@ class OSRSWintertodt(OSRSBot):
 
         self.__wait_while_active(api_m, timeout=15)
 
-    def __fletch_roots(self, api_m: MorgHTTPSocket, api_s: StatusSocket):
+    def __fletch_roots(self, api_m: MorgHTTPSocket):
         """Use knife on bruma roots to make kindling."""
         self.state = WintertodtState.FLETCHING
 
-        knife_slots = api_s.get_inv_item_indices(self.KNIFE)
-        root_slots = api_s.get_inv_item_indices(self.BRUMA_ROOT)
+        knife_slots = api_m.get_inv_item_indices(self.KNIFE)
+        root_slots = api_m.get_inv_item_indices(self.BRUMA_ROOT)
 
         if not knife_slots or not root_slots:
             self.log_msg("Missing knife or roots for fletching.")
@@ -897,12 +895,12 @@ class OSRSWintertodt(OSRSBot):
 
         self.__wait_while_active(api_m, timeout=30)
 
-    def __feed_brazier(self, api_m: MorgHTTPSocket, api_s: StatusSocket):
+    def __feed_brazier(self, api_m: MorgHTTPSocket):
         """Feed roots or kindling into the brazier (tagged PINK in RuneLite)."""
         self.state = WintertodtState.FEEDING
 
-        has_kindling = api_s.get_if_item_in_inv(self.BRUMA_KINDLING)
-        has_roots = api_s.get_if_item_in_inv(self.BRUMA_ROOT)
+        has_kindling = api_m.get_if_item_in_inv(self.BRUMA_KINDLING)
+        has_roots = api_m.get_if_item_in_inv(self.BRUMA_ROOT)
 
         if not has_kindling and not has_roots:
             return
